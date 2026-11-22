@@ -87,7 +87,7 @@ export default function App() {
               <Droplets className="w-6 h-6 text-white" />
             </div>
             <div>
-              <h1 className="text-lg font-bold tracking-tight">BlueBerryRiego</h1>
+              <h1 className="text-lg font-bold tracking-tight">Agro Control</h1>
               <p className="text-xs text-indigo-300">Registro de Lecturas y Fertirriego en Campo</p>
             </div>
           </div>
@@ -170,7 +170,7 @@ export default function App() {
               <Droplets className="w-6 h-6 text-white" />
             </div>
             <div>
-              <h1 className="text-lg font-bold tracking-tight">BlueBerryRiego — Admin</h1>
+              <h1 className="text-lg font-bold tracking-tight">Agro Control — Admin</h1>
               <p className="text-xs text-indigo-300">Control de Humedad y Fertirriego en Arándanos</p>
             </div>
           </div>

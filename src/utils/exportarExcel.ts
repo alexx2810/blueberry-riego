@@ -3,7 +3,7 @@ import type { LecturaFertirriego } from '../types/lectura';
 
 export async function exportarExcelProfesional(datos: LecturaFertirriego[]) {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = 'BlueBerryRiego';
+  workbook.creator = 'Agro Control';
   workbook.created = new Date();
 
   const sheet = workbook.addWorksheet('Lecturas y Fertirriego', {
