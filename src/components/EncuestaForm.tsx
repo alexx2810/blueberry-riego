@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { supabase } from '../lib/supabase';
-import type { LecturaFertirriego } from '../types/lectura';
+import type { LecturaFertirriego, PreguntaFormulario } from '../types/lectura';
 import { Camera, Send, CheckCircle2, Loader2, X } from 'lucide-react';
 
 interface Props {
+  preguntas: PreguntaFormulario[];
   registroEditar: LecturaFertirriego | null;
   onGuardado: () => void;
   onCancelarEdicion: () => void;
@@ -15,54 +16,115 @@ const getFechaActualLocal = () => {
   return now.toISOString().slice(0, 16);
 };
 
-export default function EncuestaForm({ registroEditar, onGuardado, onCancelarEdicion }: Props) {
-  const [fechaLectura, setFechaLectura] = useState(getFechaActualLocal());
-  const [parcela, setParcela] = useState<'Parcela A' | 'Parcela B' | 'Parcela C'>('Parcela A');
-  const [variedad, setVariedad] = useState('Ventura');
-  const [temperatura, setTemperatura] = useState<'Ola de calor' | 'Templado' | 'Frío'>('Templado');
-  const [sensor, setSensor] = useState('');
-  const [estadoEquipo, setEstadoEquipo] = useState<'Activo' | 'Inactivo'>('Activo');
-  const [fechaFertirriego, setFechaFertirriego] = useState(getFechaActualLocal());
-  const [humedad, setHumedad] = useState('');
-  const [estadoRiego, setEstadoRiego] = useState<'Óptimo' | 'Alerta' | 'Estrés hídrico'>('Óptimo');
+const generarNombreArchivo = (ext: string) =>
+  `${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${ext}`;
+
+const getValorInicialCampo = (
+  pregunta: PreguntaFormulario,
+  registro: LecturaFertirriego | null
+): string => {
+  if (registro) {
+    if (pregunta.es_base) {
+      const raw = registro[pregunta.clave as keyof LecturaFertirriego];
+      if (raw !== undefined && raw !== null && typeof raw !== 'object') {
+        if (pregunta.tipo === 'datetime') {
+          return String(raw).slice(0, 16);
+        }
+        return String(raw);
+      }
+    } else if (registro.respuestas_extra && pregunta.clave in registro.respuestas_extra) {
+      const extraVal = registro.respuestas_extra[pregunta.clave];
+      if (extraVal !== undefined && extraVal !== null) {
+        return String(extraVal);
+      }
+    }
+  }
+
+  if (pregunta.tipo === 'datetime') {
+    return getFechaActualLocal();
+  }
+  if ((pregunta.tipo === 'select' || pregunta.tipo === 'toggle') && pregunta.opciones.length > 0) {
+    return pregunta.opciones[0];
+  }
+  return '';
+};
+
+const construirValoresIniciales = (
+  preguntas: PreguntaFormulario[],
+  registro: LecturaFertirriego | null
+): Record<string, string> => {
+  const iniciales: Record<string, string> = {};
+  preguntas.forEach((p) => {
+    if (p.tipo !== 'file') {
+      iniciales[p.clave] = getValorInicialCampo(p, registro);
+    }
+  });
+  return iniciales;
+};
+
+const obtenerClaseToggle = (clave: string, opcion: string, seleccionado: boolean): string => {
+  if (!seleccionado) {
+    return 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50';
+  }
+  if (clave === 'estado_equipo') {
+    return opcion === 'Activo'
+      ? 'bg-emerald-600 text-white border-emerald-600'
+      : 'bg-slate-700 text-white border-slate-700';
+  }
+  if (clave === 'estado_riego') {
+    if (opcion === 'Óptimo') return 'bg-emerald-600 text-white border-emerald-600';
+    if (opcion === 'Alerta') return 'bg-amber-500 text-white border-amber-500';
+    if (opcion === 'Estrés hídrico') return 'bg-rose-600 text-white border-rose-600';
+  }
+  return 'bg-indigo-600 text-white border-indigo-600';
+};
+
+export default function EncuestaForm({
+  preguntas,
+  registroEditar,
+  onGuardado,
+  onCancelarEdicion,
+}: Props) {
+  const [valores, setValores] = useState<Record<string, string>>(() =>
+    construirValoresIniciales(preguntas, registroEditar)
+  );
   const [archivoFoto, setArchivoFoto] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(
+    () => registroEditar?.foto_evidencia_url ?? null
+  );
   const [enviando, setEnviando] = useState(false);
   const [mensajeExito, setMensajeExito] = useState(false);
 
-  useEffect(() => {
-    if (registroEditar) {
-      setFechaLectura(registroEditar.fecha_hora_lectura.slice(0, 16));
-      setParcela(registroEditar.nombre_parcela);
-      setVariedad(registroEditar.variedad_arandano);
-      setTemperatura(registroEditar.temperatura_ambiente);
-      setSensor(registroEditar.codigo_sensor);
-      setEstadoEquipo(registroEditar.estado_equipo);
-      setFechaFertirriego(registroEditar.fecha_hora_fertirriego.slice(0, 16));
-      setHumedad(String(registroEditar.lectura_humedad));
-      setEstadoRiego(registroEditar.estado_riego);
-      setPreviewUrl(registroEditar.foto_evidencia_url);
-      setArchivoFoto(null);
+  const preguntasActivas = [...preguntas]
+    .filter((p) => p.activa)
+    .sort((a, b) => a.orden - b.orden);
+
+  const obtenerValorActual = (pregunta: PreguntaFormulario): string => {
+    if (pregunta.clave in valores) {
+      return valores[pregunta.clave];
     }
-  }, [registroEditar]);
+    return getValorInicialCampo(pregunta, registroEditar);
+  };
+
+  const actualizarValor = (clave: string, valor: string) => {
+    setValores((prev) => ({ ...prev, [clave]: valor }));
+  };
 
   const handleSeleccionarFoto = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (previewUrl && previewUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(previewUrl);
+    }
     setArchivoFoto(file);
     setPreviewUrl(URL.createObjectURL(file));
   };
 
   const limpiarFormulario = () => {
-    setFechaLectura(getFechaActualLocal());
-    setParcela('Parcela A');
-    setVariedad('Ventura');
-    setTemperatura('Templado');
-    setSensor('');
-    setEstadoEquipo('Activo');
-    setFechaFertirriego(getFechaActualLocal());
-    setHumedad('');
-    setEstadoRiego('Óptimo');
+    if (previewUrl && previewUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(previewUrl);
+    }
+    setValores(construirValoresIniciales(preguntas, null));
     setArchivoFoto(null);
     setPreviewUrl(null);
   };
@@ -75,9 +137,16 @@ export default function EncuestaForm({ registroEditar, onGuardado, onCancelarEdi
     try {
       let fotoUrl = registroEditar?.foto_evidencia_url || null;
 
+      const preguntaArchivoRequerida = preguntasActivas.find(
+        (p) => p.tipo === 'file' && p.requerido
+      );
+      if (preguntaArchivoRequerida && !archivoFoto && !fotoUrl) {
+        throw new Error(`El campo "${preguntaArchivoRequerida.etiqueta}" es obligatorio.`);
+      }
+
       if (archivoFoto) {
-        const ext = archivoFoto.name.split('.').pop();
-        const nombreArchivo = `${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${ext}`;
+        const ext = archivoFoto.name.split('.').pop() ?? 'jpg';
+        const nombreArchivo = generarNombreArchivo(ext);
         const { error: uploadError } = await supabase.storage
           .from('evidencias')
           .upload(nombreArchivo, archivoFoto);
@@ -91,18 +160,48 @@ export default function EncuestaForm({ registroEditar, onGuardado, onCancelarEdi
         fotoUrl = urlData.publicUrl;
       }
 
-      const payload = {
-        fecha_hora_lectura: fechaLectura,
-        nombre_parcela: parcela,
-        variedad_arandano: variedad.trim(),
-        temperatura_ambiente: temperatura,
-        codigo_sensor: sensor.trim().toUpperCase(),
-        estado_equipo: estadoEquipo,
-        fecha_hora_fertirriego: fechaFertirriego,
-        lectura_humedad: parseFloat(humedad),
-        estado_riego: estadoRiego,
-        foto_evidencia_url: fotoUrl,
+      const respuestasExtra: Record<string, string | number | null> = {
+        ...(registroEditar?.respuestas_extra ?? {}),
       };
+      const payload: Record<
+        string,
+        string | number | null | Record<string, string | number | null>
+      > = {};
+
+      preguntasActivas.forEach((pregunta) => {
+        if (pregunta.tipo === 'file' || pregunta.clave === 'foto_evidencia_url') {
+          if (pregunta.es_base) {
+            payload[pregunta.clave] = fotoUrl;
+          } else {
+            respuestasExtra[pregunta.clave] = fotoUrl;
+          }
+          return;
+        }
+
+        const valorActual = obtenerValorActual(pregunta);
+
+        if (pregunta.es_base) {
+          if (pregunta.clave === 'lectura_humedad' || pregunta.tipo === 'number') {
+            const numero = parseFloat(valorActual);
+            payload[pregunta.clave] = Number.isNaN(numero) ? 0 : numero;
+          } else if (pregunta.clave === 'codigo_sensor') {
+            payload[pregunta.clave] = valorActual.trim().toUpperCase();
+          } else {
+            payload[pregunta.clave] = valorActual.trim();
+          }
+        } else if (pregunta.tipo === 'number') {
+          if (valorActual.trim() === '') {
+            respuestasExtra[pregunta.clave] = null;
+          } else {
+            const numero = Number(valorActual);
+            respuestasExtra[pregunta.clave] = Number.isNaN(numero) ? null : numero;
+          }
+        } else {
+          respuestasExtra[pregunta.clave] = valorActual.trim() === '' ? null : valorActual.trim();
+        }
+      });
+
+      payload.respuestas_extra = respuestasExtra;
 
       if (registroEditar?.id) {
         const { error } = await supabase
@@ -123,8 +222,9 @@ export default function EncuestaForm({ registroEditar, onGuardado, onCancelarEdi
         setMensajeExito(false);
         onGuardado();
       }, 1000);
-    } catch (err: any) {
-      alert('Error al guardar: ' + err.message);
+    } catch (err: unknown) {
+      const mensaje = err instanceof Error ? err.message : 'Error inesperado al guardar';
+      alert('Error al guardar: ' + mensaje);
     } finally {
       setEnviando(false);
     }
@@ -135,7 +235,9 @@ export default function EncuestaForm({ registroEditar, onGuardado, onCancelarEdi
       <div className="flex items-center justify-between mb-6 pb-4 border-b border-slate-100">
         <div>
           <h2 className="text-xl font-bold text-slate-800">
-            {registroEditar ? `Editando Registro #${registroEditar.id}` : 'Encuesta de Lecturas y Fertirriego'}
+            {registroEditar
+              ? `Editando Registro #${registroEditar.id}`
+              : 'Encuesta de Lecturas y Fertirriego'}
           </h2>
           <p className="text-sm text-slate-500">Complete los datos registrados en parcela</p>
         </div>
@@ -156,174 +258,193 @@ export default function EncuestaForm({ registroEditar, onGuardado, onCancelarEdi
       {mensajeExito && (
         <div className="mb-6 p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 flex items-center gap-3">
           <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
-          <span className="text-sm font-medium">¡Registro guardado correctamente en la base de datos!</span>
+          <span className="text-sm font-medium">
+            ¡Registro guardado correctamente en la base de datos!
+          </span>
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="space-y-5">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">1. Fecha y Hora de Lectura *</label>
-            <input
-              type="datetime-local"
-              required
-              value={fechaLectura}
-              onChange={(e) => setFechaLectura(e.target.value)}
-              className="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">2. Nombre de Parcela *</label>
-            <select
-              value={parcela}
-              onChange={(e) => setParcela(e.target.value as any)}
-              className="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
-            >
-              <option value="Parcela A">Parcela A</option>
-              <option value="Parcela B">Parcela B</option>
-              <option value="Parcela C">Parcela C</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">3. Variedad de Arándano *</label>
-            <select
-              value={variedad}
-              onChange={(e) => setVariedad(e.target.value)}
-              className="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
-            >
-              <option value="Ventura">Ventura</option>
-              <option value="Biloxi">Biloxi</option>
-              <option value="Sekoya Pop">Sekoya Pop</option>
-              <option value="Emerald">Emerald</option>
-              <option value="Rocío">Rocío</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">4. Temperatura del Ambiente *</label>
-            <select
-              value={temperatura}
-              onChange={(e) => setTemperatura(e.target.value as any)}
-              className="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
-            >
-              <option value="Ola de calor">Ola de calor</option>
-              <option value="Templado">Templado</option>
-              <option value="Frío">Frío</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">5. Código del Sensor *</label>
-            <input
-              type="text"
-              required
-              placeholder="Ej: SENS-A01"
-              value={sensor}
-              onChange={(e) => setSensor(e.target.value)}
-              className="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm uppercase focus:ring-2 focus:ring-indigo-500 outline-none"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">6. Estado de Equipo *</label>
-            <div className="grid grid-cols-2 gap-2.5">
-              {(['Activo', 'Inactivo'] as const).map((estado) => (
-                <button
-                  key={estado}
-                  type="button"
-                  onClick={() => setEstadoEquipo(estado)}
-                  className={`py-2.5 rounded-xl text-sm font-semibold border transition ${
-                    estadoEquipo === estado
-                      ? estado === 'Activo'
-                        ? 'bg-emerald-600 text-white border-emerald-600'
-                        : 'bg-slate-700 text-white border-slate-700'
-                      : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
-                  }`}
-                >
-                  {estado}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">7. Lectura de Fertirriego (Fecha/Hora) *</label>
-            <input
-              type="datetime-local"
-              required
-              value={fechaFertirriego}
-              onChange={(e) => setFechaFertirriego(e.target.value)}
-              className="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">8. Lectura de Humedad (%) *</label>
-            <input
-              type="number"
-              step="0.01"
-              min="0"
-              max="100"
-              required
-              placeholder="Ej: 64.5"
-              value={humedad}
-              onChange={(e) => setHumedad(e.target.value)}
-              className="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
-            />
-          </div>
+      {preguntasActivas.length === 0 ? (
+        <div className="py-10 text-center text-sm text-slate-400">
+          No hay preguntas activas configuradas en el formulario.
         </div>
+      ) : (
+        <form onSubmit={handleSubmit} className="space-y-5">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            {preguntasActivas.map((pregunta, index) => {
+              const valorActual = obtenerValorActual(pregunta);
+              const esAnchoCompleto =
+                pregunta.tipo === 'file' ||
+                pregunta.clave === 'estado_riego' ||
+                (pregunta.tipo === 'toggle' && pregunta.opciones.length > 2);
 
-        <div>
-          <label className="block text-sm font-semibold text-slate-700 mb-1.5">9. Estado de Riego *</label>
-          <div className="grid grid-cols-3 gap-2.5">
-            {(['Óptimo', 'Alerta', 'Estrés hídrico'] as const).map((est) => (
-              <button
-                key={est}
-                type="button"
-                onClick={() => setEstadoRiego(est)}
-                className={`py-2.5 px-2 rounded-xl text-sm font-semibold border transition ${
-                  estadoRiego === est
-                    ? est === 'Óptimo'
-                      ? 'bg-emerald-600 text-white border-emerald-600'
-                      : est === 'Alerta'
-                      ? 'bg-amber-500 text-white border-amber-500'
-                      : 'bg-rose-600 text-white border-rose-600'
-                    : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
-                }`}
-              >
-                {est}
-              </button>
-            ))}
+              if (pregunta.tipo === 'file') {
+                return (
+                  <div key={pregunta.id ?? pregunta.clave} className="md:col-span-2">
+                    <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                      {index + 1}. {pregunta.etiqueta} {pregunta.requerido ? '*' : ''}
+                    </label>
+                    <label className="flex flex-col items-center justify-center w-full h-36 border-2 border-dashed border-slate-300 rounded-xl cursor-pointer bg-slate-50 hover:bg-slate-100 transition overflow-hidden">
+                      {previewUrl ? (
+                        <img
+                          src={previewUrl}
+                          alt="Vista previa"
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <div className="flex flex-col items-center justify-center py-4 text-slate-500">
+                          <Camera className="w-7 h-7 mb-1.5 text-indigo-500" />
+                          <span className="text-sm font-medium">
+                            {pregunta.placeholder || 'Toca para subir o tomar foto'}
+                          </span>
+                          <span className="text-xs text-slate-400">JPG, PNG o WEBP</span>
+                        </div>
+                      )}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleSeleccionarFoto}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
+                );
+              }
+
+              if (pregunta.tipo === 'toggle') {
+                const cols =
+                  pregunta.opciones.length >= 3
+                    ? 'grid-cols-3'
+                    : pregunta.opciones.length === 2
+                    ? 'grid-cols-2'
+                    : 'grid-cols-1';
+                return (
+                  <div
+                    key={pregunta.id ?? pregunta.clave}
+                    className={esAnchoCompleto ? 'md:col-span-2' : ''}
+                  >
+                    <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                      {index + 1}. {pregunta.etiqueta} {pregunta.requerido ? '*' : ''}
+                    </label>
+                    <div className={`grid ${cols} gap-2.5`}>
+                      {pregunta.opciones.map((opcion) => (
+                        <button
+                          key={opcion}
+                          type="button"
+                          onClick={() => actualizarValor(pregunta.clave, opcion)}
+                          className={`py-2.5 px-2 rounded-xl text-sm font-semibold border transition ${obtenerClaseToggle(
+                            pregunta.clave,
+                            opcion,
+                            valorActual === opcion
+                          )}`}
+                        >
+                          {opcion}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              }
+
+              if (pregunta.tipo === 'select') {
+                const opcionesSelect =
+                  valorActual && !pregunta.opciones.includes(valorActual)
+                    ? [valorActual, ...pregunta.opciones]
+                    : pregunta.opciones;
+
+                return (
+                  <div key={pregunta.id ?? pregunta.clave}>
+                    <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                      {index + 1}. {pregunta.etiqueta} {pregunta.requerido ? '*' : ''}
+                    </label>
+                    <select
+                      required={pregunta.requerido}
+                      value={valorActual}
+                      onChange={(e) => actualizarValor(pregunta.clave, e.target.value)}
+                      className="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
+                    >
+                      {!pregunta.requerido && pregunta.opciones.length === 0 && (
+                        <option value="">Selecciona una opción</option>
+                      )}
+                      {opcionesSelect.map((opcion) => (
+                        <option key={opcion} value={opcion}>
+                          {opcion}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                );
+              }
+
+              if (pregunta.tipo === 'datetime') {
+                return (
+                  <div key={pregunta.id ?? pregunta.clave}>
+                    <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                      {index + 1}. {pregunta.etiqueta} {pregunta.requerido ? '*' : ''}
+                    </label>
+                    <input
+                      type="datetime-local"
+                      required={pregunta.requerido}
+                      value={valorActual}
+                      onChange={(e) => actualizarValor(pregunta.clave, e.target.value)}
+                      className="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                    />
+                  </div>
+                );
+              }
+
+              if (pregunta.tipo === 'number') {
+                const esHumedad = pregunta.clave === 'lectura_humedad';
+                return (
+                  <div key={pregunta.id ?? pregunta.clave}>
+                    <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                      {index + 1}. {pregunta.etiqueta} {pregunta.requerido ? '*' : ''}
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min={esHumedad ? '0' : undefined}
+                      max={esHumedad ? '100' : undefined}
+                      required={pregunta.requerido}
+                      placeholder={pregunta.placeholder}
+                      value={valorActual}
+                      onChange={(e) => actualizarValor(pregunta.clave, e.target.value)}
+                      className="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                    />
+                  </div>
+                );
+              }
+
+              return (
+                <div key={pregunta.id ?? pregunta.clave}>
+                  <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                    {index + 1}. {pregunta.etiqueta} {pregunta.requerido ? '*' : ''}
+                  </label>
+                  <input
+                    type="text"
+                    required={pregunta.requerido}
+                    placeholder={pregunta.placeholder}
+                    value={valorActual}
+                    onChange={(e) => actualizarValor(pregunta.clave, e.target.value)}
+                    className={`w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none ${
+                      pregunta.clave === 'codigo_sensor' ? 'uppercase' : ''
+                    }`}
+                  />
+                </div>
+              );
+            })}
           </div>
-        </div>
 
-        <div>
-          <label className="block text-sm font-semibold text-slate-700 mb-1.5">10. Foto de Evidencia</label>
-          <label className="flex flex-col items-center justify-center w-full h-36 border-2 border-dashed border-slate-300 rounded-xl cursor-pointer bg-slate-50 hover:bg-slate-100 transition overflow-hidden">
-            {previewUrl ? (
-              <img src={previewUrl} alt="Vista previa" className="w-full h-full object-cover" />
-            ) : (
-              <div className="flex flex-col items-center justify-center py-4 text-slate-500">
-                <Camera className="w-7 h-7 mb-1.5 text-indigo-500" />
-                <span className="text-sm font-medium">Toca para subir o tomar foto</span>
-                <span className="text-xs text-slate-400">JPG, PNG o WEBP</span>
-              </div>
-            )}
-            <input type="file" accept="image/*" onChange={handleSeleccionarFoto} className="hidden" />
-          </label>
-        </div>
-
-        <button
-          type="submit"
-          disabled={enviando}
-          className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm flex items-center justify-center gap-2 shadow-sm transition disabled:opacity-60"
-        >
-          {enviando ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-          {registroEditar ? 'Actualizar Registro' : 'Enviar Encuesta'}
-        </button>
-      </form>
+          <button
+            type="submit"
+            disabled={enviando}
+            className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm flex items-center justify-center gap-2 shadow-sm transition disabled:opacity-60"
+          >
+            {enviando ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+            {registroEditar ? 'Actualizar Registro' : 'Enviar Encuesta'}
+          </button>
+        </form>
+      )}
     </div>
   );
 }

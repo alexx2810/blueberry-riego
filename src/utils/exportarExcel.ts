@@ -1,7 +1,42 @@
 import ExcelJS from 'exceljs';
-import type { LecturaFertirriego } from '../types/lectura';
+import type { LecturaFertirriego, PreguntaFormulario } from '../types/lectura';
 
-export async function exportarExcelProfesional(datos: LecturaFertirriego[]) {
+const obtenerValorPregunta = (
+  item: LecturaFertirriego,
+  pregunta: PreguntaFormulario
+): string | number | null | undefined => {
+  if (pregunta.es_base) {
+    const valor = item[pregunta.clave as keyof LecturaFertirriego];
+    if (typeof valor === 'object') return null;
+    return valor;
+  }
+  return item.respuestas_extra?.[pregunta.clave];
+};
+
+const formatearFechaExcel = (valor: unknown): string => {
+  if (!valor) return '';
+  const fecha = new Date(String(valor));
+  if (Number.isNaN(fecha.getTime())) return String(valor);
+  return fecha.toLocaleString('es-PE', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+const calcularAnchoColumna = (pregunta: PreguntaFormulario): number => {
+  if (pregunta.tipo === 'datetime' || pregunta.tipo === 'file') return 22;
+  if (pregunta.clave === 'variedad_arandano') return 22;
+  if (pregunta.clave === 'temperatura_ambiente' || pregunta.clave === 'estado_riego') return 18;
+  return Math.max(16, Math.min(28, pregunta.etiqueta.length + 4));
+};
+
+export async function exportarExcelProfesional(
+  datos: LecturaFertirriego[],
+  preguntas: PreguntaFormulario[]
+) {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Agro Control';
   workbook.created = new Date();
@@ -10,8 +45,17 @@ export async function exportarExcelProfesional(datos: LecturaFertirriego[]) {
     views: [{ state: 'frozen', ySplit: 4 }],
   });
 
-  // Título principal (Fila 1)
-  sheet.mergeCells('A1:K1');
+  const preguntasActivas = [...preguntas].filter((p) => p.activa);
+  const basePreguntas = preguntasActivas
+    .filter((p) => p.es_base)
+    .sort((a, b) => a.orden - b.orden);
+  const extraPreguntas = preguntasActivas
+    .filter((p) => !p.es_base)
+    .sort((a, b) => a.orden - b.orden);
+  const columnasPreguntas = [...basePreguntas, ...extraPreguntas];
+  const totalColumnas = 1 + columnasPreguntas.length;
+
+  sheet.mergeCells(1, 1, 1, totalColumnas);
   const tituloCell = sheet.getCell('A1');
   tituloCell.value = 'REPORTE DE MONITOREO DE HUMEDAD Y FERTIRRIEGO - CULTIVO DE ARÁNDANOS';
   tituloCell.font = { name: 'Calibri', size: 14, bold: true, color: { argb: 'FFFFFFFF' } };
@@ -19,8 +63,7 @@ export async function exportarExcelProfesional(datos: LecturaFertirriego[]) {
   tituloCell.alignment = { vertical: 'middle', horizontal: 'center' };
   sheet.getRow(1).height = 32;
 
-  // Subtítulo con fecha de exportación (Fila 2)
-  sheet.mergeCells('A2:K2');
+  sheet.mergeCells(2, 1, 2, totalColumnas);
   const subCell = sheet.getCell('A2');
   subCell.value = `Generado el: ${new Date().toLocaleString('es-PE')} | Total de registros: ${datos.length}`;
   subCell.font = { name: 'Calibri', size: 10, italic: true, color: { argb: 'FF334155' } };
@@ -28,23 +71,9 @@ export async function exportarExcelProfesional(datos: LecturaFertirriego[]) {
   subCell.alignment = { vertical: 'middle', horizontal: 'center' };
   sheet.getRow(2).height = 20;
 
-  // Fila 3 vacía de separación
   sheet.getRow(3).height = 10;
 
-  // Encabezados de tabla (Fila 4)
-  const encabezados = [
-    'ID',
-    'Fecha y Hora Lectura',
-    'Parcela',
-    'Variedad de Arándano',
-    'Temp. Ambiente',
-    'Código Sensor',
-    'Estado Equipo',
-    'Fecha y Hora Fertirriego',
-    'Humedad (%)',
-    'Estado de Riego',
-    'Evidencia Fotográfica',
-  ];
+  const encabezados = ['ID', ...columnasPreguntas.map((p) => p.etiqueta)];
 
   const headerRow = sheet.getRow(4);
   headerRow.values = encabezados;
@@ -62,38 +91,45 @@ export async function exportarExcelProfesional(datos: LecturaFertirriego[]) {
     };
   });
 
-  // Filas de datos (desde Fila 5)
   datos.forEach((item, index) => {
     const rowNumber = index + 5;
     const row = sheet.getRow(rowNumber);
     row.height = 24;
 
-    row.values = [
-      item.id ?? '',
-      new Date(item.fecha_hora_lectura).toLocaleString('es-PE', {
-        day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
-      }),
-      item.nombre_parcela,
-      item.variedad_arandano,
-      item.temperatura_ambiente,
-      item.codigo_sensor,
-      item.estado_equipo,
-      new Date(item.fecha_hora_fertirriego).toLocaleString('es-PE', {
-        day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
-      }),
-      Number(item.lectura_humedad),
-      item.estado_riego,
-      item.foto_evidencia_url ? 'Ver Evidencia' : 'Sin foto',
-    ];
+    const valoresFila = columnasPreguntas.map((pregunta) => {
+      const raw = obtenerValorPregunta(item, pregunta);
+
+      if (pregunta.tipo === 'file' || pregunta.clave === 'foto_evidencia_url') {
+        return typeof raw === 'string' && raw ? 'Ver Evidencia' : 'Sin foto';
+      }
+      if (pregunta.tipo === 'datetime') {
+        return formatearFechaExcel(raw);
+      }
+      if (pregunta.clave === 'lectura_humedad' || pregunta.tipo === 'number') {
+        if (raw === null || raw === undefined || raw === '') return '';
+        const numero = Number(raw);
+        return Number.isNaN(numero) ? String(raw) : numero;
+      }
+      return raw ?? '';
+    });
+
+    row.values = [item.id ?? '', ...valoresFila];
 
     const fondoAlterno = index % 2 === 1 ? 'FFF8FAFC' : 'FFFFFFFF';
 
     row.eachCell((cell, colNumber) => {
+      const pregunta = colNumber > 1 ? columnasPreguntas[colNumber - 2] : undefined;
+      const esIzquierda =
+        pregunta &&
+        (pregunta.clave === 'variedad_arandano' ||
+          pregunta.clave === 'temperatura_ambiente' ||
+          (!pregunta.es_base && pregunta.tipo === 'text'));
+
       cell.font = { name: 'Calibri', size: 10.5, color: { argb: 'FF1E293B' } };
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fondoAlterno } };
       cell.alignment = {
         vertical: 'middle',
-        horizontal: [1, 2, 3, 6, 7, 8, 9, 10, 11].includes(colNumber) ? 'center' : 'left',
+        horizontal: esIzquierda ? 'left' : 'center',
       };
       cell.border = {
         top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
@@ -102,15 +138,17 @@ export async function exportarExcelProfesional(datos: LecturaFertirriego[]) {
         right: { style: 'thin', color: { argb: 'FFCBD5E1' } },
       };
 
-      // Formato numérico de Humedad (Columna 9)
-      if (colNumber === 9) {
+      if (!pregunta) return;
+
+      const raw = obtenerValorPregunta(item, pregunta);
+
+      if (pregunta.clave === 'lectura_humedad') {
         cell.numFmt = '0.00" %"';
         cell.font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: 'FF0F172A' } };
       }
 
-      // Semáforo visual en Estado Equipo (Columna 7)
-      if (colNumber === 7) {
-        const esActivo = item.estado_equipo === 'Activo';
+      if (pregunta.clave === 'estado_equipo') {
+        const esActivo = raw === 'Activo';
         cell.fill = {
           type: 'pattern',
           pattern: 'solid',
@@ -124,24 +162,28 @@ export async function exportarExcelProfesional(datos: LecturaFertirriego[]) {
         };
       }
 
-      // Semáforo visual en Estado de Riego (Columna 10)
-      if (colNumber === 10) {
+      if (pregunta.clave === 'estado_riego') {
         const colores =
-          item.estado_riego === 'Óptimo'
+          raw === 'Óptimo'
             ? { bg: 'FFD1FAE5', text: 'FF065F46' }
-            : item.estado_riego === 'Alerta'
+            : raw === 'Alerta'
             ? { bg: 'FFFEF3C7', text: 'FF92400E' }
-            : { bg: 'FFFFE4E6', text: 'FF9F1239' };
+            : raw === 'Estrés hídrico'
+            ? { bg: 'FFFFE4E6', text: 'FF9F1239' }
+            : { bg: 'FFE2E8F0', text: 'FF334155' };
 
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colores.bg } };
         cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: colores.text } };
       }
 
-      // Hipervínculo clicable "Ver Evidencia" (Columna 11)
-      if (colNumber === 11 && item.foto_evidencia_url) {
+      if (
+        (pregunta.tipo === 'file' || pregunta.clave === 'foto_evidencia_url') &&
+        typeof raw === 'string' &&
+        raw
+      ) {
         cell.value = {
           text: 'Ver Evidencia',
-          hyperlink: item.foto_evidencia_url,
+          hyperlink: raw,
           tooltip: 'Clic para abrir la fotografía en el navegador',
         };
         cell.font = {
@@ -155,13 +197,11 @@ export async function exportarExcelProfesional(datos: LecturaFertirriego[]) {
     });
   });
 
-  // Ajuste automático de ancho de cada columna con margen extra
-  const anchos = [8, 22, 15, 22, 18, 16, 16, 22, 15, 18, 22];
+  const anchos = [8, ...columnasPreguntas.map(calcularAnchoColumna)];
   anchos.forEach((width, i) => {
     sheet.getColumn(i + 1).width = width;
   });
 
-  // Descargar archivo .xlsx real
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
